@@ -1,0 +1,226 @@
+//@version=5
+strategy("Simple Algo v3 PRO Strategy", overlay=true, initial_capital=100, default_qty_type=strategy.cash, default_qty_value=100)
+ 
+// Stop Loss Type Selection
+stopType = input.string("ATR", "Stop Loss Type", options=["ATR", "Fixed Percent", "Indicator", "Dynamic", "Chandelier", "SuperTrend"], group="Stop Loss Settings")
+fixedStopPercent = input.float(1.0, "Fixed Stop Loss %", minval=0.1, maxval=100.0, step=0.1, group="Stop Loss Settings")
+atrLen = input.int(14, "ATR Length", minval=1, group="Stop Loss Settings")
+atrRisk = input.float(1.0, "ATR Multiplier", minval=0.1, step=0.1, group="Stop Loss Settings")
+
+// Additional Stop Loss Parameters
+chandelierLen = input.int(22, "Chandelier Exit Period", minval=1, group="Stop Loss Settings")
+chandelierMult = input.float(3.0, "Chandelier ATR Multiple", minval=0.1, step=0.1, group="Stop Loss Settings")
+
+// Dynamic Stop Loss Settings
+dynamicAtrMult = input.float(2.0, "Dynamic ATR Multiplier", minval=0.1, step=0.1, group="Dynamic Stop Settings")
+dynamicVolMult = input.float(0.5, "Dynamic Volatility Multiplier", minval=0.1, step=0.1, group="Dynamic Stop Settings")
+maxStopPercent = input.float(2.0, "Maximum Stop Loss %", minval=0.1, maxval=5.0, step=0.1, group="Dynamic Stop Settings")
+
+// Exit Strategy Selection
+exitStrategy = input.string("Both", "Exit Strategy", options=["TPs Only", "Next Signal Only", "Both"], group="Exit Strategy")
+
+// Risk Management Inputs
+riskPerTrade = input.float(2.0, "Risk Per Trade (%)", minval=0.1, maxval=100.0, step=0.1, group="Risk Management")
+useTP1 = input.bool(true, "Use TP 1:1", group="Take Profit Management")
+useTP2 = input.bool(true, "Use TP 2:1", group="Take Profit Management")
+useTP3 = input.bool(true, "Use TP 3:1 (Closes on opposite signal)", group="Take Profit Management")
+tp1Percent = input.float(40.0, "TP1 Position Close (%)", minval=1, maxval=100, group="Take Profit Management")
+tp2Percent = input.float(40.0, "TP2 Position Close (%)", minval=1, maxval=100, group="Take Profit Management")
+tp3Percent = input.float(20.0, "TP3 Position Close (%)", minval=1, maxval=100, group="Take Profit Management")
+
+// Original Indicator Parameters
+nbuysell = input.bool(true, "Buy/Sell Signal", group="Strategy Parameters")
+nsensitivity = input.float(2, "Sensitivity", minval=1, maxval=20, group="Strategy Parameters")
+
+// Variables for current trade
+var float entry_price = na
+var float lastTP1 = na
+var float lastTP2 = na
+var float lastTP3 = na
+var float lastStop = na
+
+// Variables for TP tracking
+var bool tp1Reached = false
+var bool tp2Reached = false
+var bool tp3Reached = false
+
+// Chandelier Exit Calculation
+getChandelierStop(isLong) =>
+    float hiHigh = ta.highest(high, chandelierLen)
+    float loLow = ta.lowest(low, chandelierLen)
+    float chandATR = ta.atr(chandelierLen) * chandelierMult
+    float longStop = hiHigh - chandATR
+    float shortStop = loLow + chandATR
+    isLong ? longStop : shortStop
+
+// Dynamic Stop Loss Calculation
+getDynamicStop(isLong) =>
+    float atr = ta.atr(atrLen)
+    float vol = ta.stdev(close, 20) / ta.sma(close, 20)
+    float baseStop = atr * dynamicAtrMult
+    float volAdjust = baseStop * vol * dynamicVolMult
+    float finalStopPct = math.min(volAdjust / close * 100, maxStopPercent)
+    isLong ? close * (1 - finalStopPct/100) : close * (1 + finalStopPct/100)
+
+// Supertrend Function
+supertrend(_close, factor, atrLen) =>
+    atr = ta.atr(atrLen)
+    upperBand = _close + factor * atr
+    lowerBand = _close - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+    int direction = na
+    float superTrend = na
+    prevSuperTrend = superTrend[1]
+    if na(atr[1])
+        direction := 1
+    else if prevSuperTrend == prevUpperBand
+        direction := close > upperBand ? -1 : 1
+    else
+        direction := close < lowerBand ? 1 : -1
+    superTrend := direction == -1 ? lowerBand : upperBand
+    [superTrend, direction]
+
+// Calculate Components
+sma4 = ta.sma(close, 8)
+sma5 = ta.sma(close, 9)
+sma9 = ta.sma(close, 13)
+[supertrend, direction] = supertrend(close, nsensitivity*2, 11)
+
+// Calculate Signals
+bull = ta.crossover(close, supertrend) and close >= sma9 and nbuysell
+bear = ta.crossunder(close, supertrend) and close <= sma9 and nbuysell
+
+// Calculate Stop Loss based on selected type
+calculateStopLoss(isLong) =>
+    float stopLevel = na
+    if stopType == "ATR"
+        atrValue = ta.atr(atrLen) * atrRisk
+        stopLevel := isLong ? low - atrValue : high + atrValue
+    else if stopType == "Fixed Percent"
+        stopLevel := isLong ? close * (1 - fixedStopPercent/100) : close * (1 + fixedStopPercent/100)
+    else if stopType == "Dynamic"
+        stopLevel := getDynamicStop(isLong)
+    else if stopType == "Chandelier"
+        stopLevel := getChandelierStop(isLong)
+    else if stopType == "SuperTrend"
+        stopLevel := supertrend
+    else // Indicator
+        stopLevel := isLong ? supertrend : supertrend
+    stopLevel
+
+// Position Size Calculation
+calcPositionSize(entryPrice, stopPrice) =>
+    riskAmount = strategy.equity * (riskPerTrade / 100)
+    positionSize = riskAmount / math.abs(entryPrice - stopPrice)
+    positionSize
+
+// Reset values and calculate levels on new position
+if bull or bear
+    entry_price := close
+    tp1Reached := false
+    tp2Reached := false
+    tp3Reached := false
+    
+    lastStop := calculateStopLoss(bull)
+    if bull
+        lastTP1 := close + (close - lastStop)
+        lastTP2 := close + (close - lastStop) * 2
+        lastTP3 := close + (close - lastStop) * 3
+    else
+        lastTP1 := close - (lastStop - close)
+        lastTP2 := close - (lastStop - close) * 2
+        lastTP3 := close - (lastStop - close) * 3
+
+// Entry Rules
+if bull
+    posSize = calcPositionSize(close, lastStop)
+    strategy.entry("Long", strategy.long, qty=posSize)
+
+if bear
+    posSize = calcPositionSize(close, lastStop)
+    strategy.entry("Short", strategy.short, qty=posSize)
+
+// Check TP hits
+if strategy.position_size > 0
+    if high >= lastTP1 and not tp1Reached
+        tp1Reached := true
+    if high >= lastTP2 and not tp2Reached and tp1Reached
+        tp2Reached := true
+    if high >= lastTP3 and not tp3Reached and tp2Reached
+        tp3Reached := true
+else if strategy.position_size < 0
+    if low <= lastTP1 and not tp1Reached
+        tp1Reached := true
+    if low <= lastTP2 and not tp2Reached and tp1Reached
+        tp2Reached := true
+    if low <= lastTP3 and not tp3Reached and tp2Reached
+        tp3Reached := true
+
+// Take Profit Management
+if strategy.position_size > 0
+    tp1Size = math.abs(strategy.position_size * (tp1Percent / 100))
+    tp2Size = math.abs(strategy.position_size * (tp2Percent / 100))
+    tp3Size = math.abs(strategy.position_size * (tp3Percent / 100))
+    
+    if useTP1
+        strategy.exit("Long TP1", "Long", qty=tp1Size, limit=lastTP1, stop=lastStop, comment="TP1 " + str.tostring(tp1Percent) + "%")
+    if useTP2 and tp1Reached
+        strategy.exit("Long TP2", "Long", qty=tp2Size, limit=lastTP2, stop=lastStop, comment="TP2 " + str.tostring(tp2Percent) + "%")
+    if useTP3 and tp2Reached and bear  // Only close TP3 on opposite signal
+        strategy.close("Long", qty=tp3Size, comment="TP3 " + str.tostring(tp3Percent) + "% on Signal")
+
+if strategy.position_size < 0
+    tp1Size = math.abs(strategy.position_size * (tp1Percent / 100))
+    tp2Size = math.abs(strategy.position_size * (tp2Percent / 100))
+    tp3Size = math.abs(strategy.position_size * (tp3Percent / 100))
+    
+    if useTP1
+        strategy.exit("Short TP1", "Short", qty=tp1Size, limit=lastTP1, stop=lastStop, comment="TP1 " + str.tostring(tp1Percent) + "%")
+    if useTP2 and tp1Reached
+        strategy.exit("Short TP2", "Short", qty=tp2Size, limit=lastTP2, stop=lastStop, comment="TP2 " + str.tostring(tp2Percent) + "%")
+    if useTP3 and tp2Reached and bull  // Only close TP3 on opposite signal
+        strategy.close("Short", qty=tp3Size, comment="TP3 " + str.tostring(tp3Percent) + "% on Signal")
+
+// Exit on next signal if enabled
+if (exitStrategy != "TPs Only")
+    if bull and strategy.position_size < 0 and not tp2Reached
+        strategy.close("Short", comment="Exit on Buy Signal")
+    if bear and strategy.position_size > 0 and not tp2Reached
+        strategy.close("Long", comment="Exit on Sell Signal")
+
+// Plot Entry Signals
+plotshape(bull, title="Buy Signal", text="Buy", style=shape.labelup, location=location.belowbar, color=color.rgb(0, 255, 0), textcolor=color.white, size=size.small)
+plotshape(bear, title="Sell Signal", text="Sell", style=shape.labeldown, location=location.abovebar, color=color.rgb(255, 0, 0), textcolor=color.white, size=size.small)
+
+// Plot Different Stop Levels (when not in position)
+var float dynStop = na
+var float chandStop = na
+var float atrStop = na
+var float fixedStop = na
+
+if barstate.islast
+    dynStop := getDynamicStop(true)
+    chandStop := getChandelierStop(true)
+    atrValue = ta.atr(atrLen) * atrRisk
+    atrStop := low - atrValue
+    fixedStop := close * (1 - fixedStopPercent/100)
+
+
+// Plot Entry Signals
+plotshape(bull, title="Buy Signal", text="Buy", style=shape.labelup, location=location.belowbar, color=color.rgb(0, 255, 0), textcolor=color.white, size=size.small)
+plotshape(bear, title="Sell Signal", text="Sell", style=shape.labeldown, location=location.abovebar, color=color.rgb(255, 0, 0), textcolor=color.white, size=size.small)
+
+// Plot Different Stop Levels
+plot(dynStop, "Dynamic Stop", color=color.new(color.purple, 50), style=plot.style_circles)
+plot(chandStop, "Chandelier Stop", color=color.new(color.orange, 50), style=plot.style_circles)
+plot(atrStop, "ATR Stop", color=color.new(color.blue, 50), style=plot.style_circles)
+plot(fixedStop, "Fixed Stop", color=color.new(color.gray, 50), style=plot.style_circles)
+
+// Plot Active Trade Levels
+plot(strategy.position_size != 0 ? lastTP1 : na, "TP1", color=color.green, style=plot.style_circles)
+plot(strategy.position_size != 0 ? lastTP2 : na, "TP2", color=color.green, style=plot.style_circles)
+plot(strategy.position_size != 0 ? lastTP3 : na, "TP3", color=color.green, style=plot.style_circles)
+plot(strategy.position_size != 0 ? lastStop : na, "Active Stop", color=color.red, style=plot.style_circles)

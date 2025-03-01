@@ -1,0 +1,101 @@
+//@version=5
+indicator(title="HA SuperTrend Pro by TradingRO", overlay=true, format=format.price, precision=2)
+
+// Heikin Ashi Calculations (optimized)
+source = input(defval=close, title="Source")
+
+haClose = (open + high + low + source) / 4
+var float haOpen = na
+haOpen := na(haOpen[1]) ? (open + source) / 2 : (haOpen[1] + haClose[1]) / 2
+haHigh = math.max(high, math.max(haClose, haOpen))
+haLow = math.min(low, math.min(haClose, haOpen))
+
+// ATR Calculation (optimized)
+Periods = input.int(title="ATR Period", defval=5)
+Multiplier = input.float(title="ATR Multiplier", step=0.1, defval=1.5)
+changeATR = input.bool(title="Change ATR Calculation Method?", defval=true)
+atr2 = ta.sma(ta.tr, Periods)
+atr = changeATR ? ta.atr(Periods) : atr2
+
+// Supertrend Calculation (optimized)
+up = haClose - (Multiplier * atr)
+dn = haClose + (Multiplier * atr)
+
+// Store previous Supertrend values to avoid redundant calculations
+upPrev = ta.valuewhen(haClose[1] > up[1], up[1], 0)
+dnPrev = ta.valuewhen(haClose[1] < dn[1], dn[1], 0)
+
+// Adjust up and dn based on previous values
+up := haClose[1] > upPrev ? math.max(up, upPrev) : up
+dn := haClose[1] < dnPrev ? math.min(dn, dnPrev) : dn
+
+// Initialize trend variable
+var int trend = 1  // Initialize 'trend' to 1 (bullish) by default
+
+// Trend Calculation (optimized)
+trend := (trend == -1 and haClose > dnPrev) ? 1 : (trend == 1 and haClose < upPrev) ? -1 : trend
+
+// Secondary EMA for trend confirmation
+emaShort = ta.ema(close, 9)
+emaLong = ta.ema(close, 50)
+trendConfirmed = emaShort > emaLong ? 1 : -1
+
+// RSI Filter
+rsi = ta.rsi(close, 14)
+rsiFilter = rsi > 50 ? 1 : -1
+
+// Volume Filter
+volSma = ta.sma(volume, 20)
+volumeFilter = volume > volSma ? 1 : -1
+
+// Buy/Sell Signal with Filters
+var int buyCount = 0
+var int sellCount = 0
+
+buySignal = trend == 1 and trend[1] == -1 and trendConfirmed == 1 and rsiFilter == 1 and volumeFilter == 1
+sellSignal = trend == -1 and trend[1] == 1 and trendConfirmed == -1 and rsiFilter == -1 and volumeFilter == -1
+
+buyCount := buySignal ? 1 : (trend == 1 and trend[1] == 1 ? buyCount + 1 : 0)
+sellCount := sellSignal ? 1 : (trend == -1 and trend[1] == -1 ? sellCount + 1 : 0)
+
+// Semnal Buy/SELL atunci când Supertrend devine verde sau roșu
+buySignalSupertrend = trend == 1 and trend[1] == -1
+sellSignalSupertrend = trend == -1 and trend[1] == 1
+
+// Afișare semnale de BUY/SELL pentru schimbarea culorii Supertrend
+plotshape(series=buySignal or buySignalSupertrend, title="UpTrend Begins", location=location.belowbar, style=shape.labelup, size=size.tiny, color=color.green, textcolor=color.white, text="BUY", offset=-1)
+plotshape(series=sellSignal or sellSignalSupertrend, title="DownTrend Begins", location=location.abovebar, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white, text="SELL", offset=-1)
+
+// Supertrend Plotting (for clarity)
+trendColor = trend == 1 and trendConfirmed == 1 ? color.blue : trend == -1 and trendConfirmed == -1 ? color.maroon : color.gray
+upPlot = plot(trend == 1 ? up : na, title="Up Trend", style=plot.style_linebr, linewidth=2, color=trendColor)
+dnPlot = plot(trend == 1 ? na : dn, title="Down Trend", style=plot.style_linebr, linewidth=2, color=trendColor)
+
+// Highlight Trend (optional)
+highlighting = input.bool(title="Highlighter On/Off", defval=true)
+longFillColor = highlighting ? color.new(color.green, 80) : na
+shortFillColor = highlighting ? color.new(color.red, 80) : na
+
+mPlot = plot(ohlc4, title="", style=plot.style_circles, linewidth=1) // Changed linewidth to 1
+fill(mPlot, upPlot, title="UpTrend Highlighter", color=longFillColor)
+fill(mPlot, dnPlot, title="DownTrend Highlighter", color=shortFillColor)
+
+// Alerts
+alertcondition(buySignal, title="SuperTrend Buy", message="SuperTrend Buy Signal Triggered!")
+alertcondition(sellSignal, title="SuperTrend Sell", message="SuperTrend Sell Signal Triggered!")
+alertcondition(trend != trend[1], title="Trend Direction Change", message="SuperTrend has changed direction!")
+
+// EMA Calculation for trend direction (optional)
+emaLength = input.int(title="EMA Length", defval=9, minval=2)
+emaSource = input.source(title="EMA Source", defval=close)
+ema = ta.ema(emaSource, emaLength)
+
+plot(ema, title="EMA", color=color.blue, linewidth=2)
+plot(emaLong, title="EMA 50", color=color.orange, linewidth=2)
+
+// Background Coloring Based on Trend
+bgcolor(trend == 1 ? color.new(color.green, 90) : color.new(color.red, 90))
+
+// Add bar color based on EMA (optional)
+barColoring = input.bool(title="Enable Bar Coloring", defval=true)
+barcolor(barColoring ? (close > ema ? color.green : color.red) : na)     

@@ -1,0 +1,437 @@
+//@version=5
+strategy("Simple Algo v3 PRO Strategy", overlay=true, initial_capital=100, default_qty_type=strategy.cash, default_qty_value=100)
+ 
+// Display Settings
+showLevels = input.bool(true, "Show TP and Stop Loss Lines", group="Display Settings")
+
+// Session Display Settings
+show_sesa = input.bool(true, '', inline = 'sesa', group = 'Session Settings')
+sesa_txt = input('New York', '', inline = 'sesa', group = 'Session Settings')
+sesa_ses = input.session('1000-1900', '', inline = 'sesa', group = 'Session Settings')
+sesa_css = input.color(#ff5d00, '', inline = 'sesa', group = 'Session Settings')
+sesa_range = input.bool(true, 'Range', inline = 'sesa_overlays', group = 'Session Settings')
+
+show_sesb = input.bool(true, '', inline = 'sesb', group = 'Session Settings')
+sesb_txt = input('London', '', inline = 'sesb', group = 'Session Settings')
+sesb_ses = input.session('0400-1300', '', inline = 'sesb', group = 'Session Settings')
+sesb_css = input.color(#2157f3, '', inline = 'sesb', group = 'Session Settings')
+sesb_range = input.bool(true, 'Range', inline = 'sesb_overlays', group = 'Session Settings')
+
+show_sesc = input.bool(true, '', inline = 'sesc', group = 'Session Settings')
+sesc_txt = input('Tokyo', '', inline = 'sesc', group = 'Session Settings')
+sesc_ses = input.session('2100-0600', '', inline = 'sesc', group = 'Session Settings')
+sesc_css = input.color(#e91e63, '', inline = 'sesc', group = 'Session Settings')
+sesc_range = input.bool(true, 'Range', inline = 'sesc_overlays', group = 'Session Settings')
+
+// Range Options
+bg_transp = input.float(90, 'Range Area Transparency', group = 'Range Settings')
+show_outline = input(true, 'Range Outline', group = 'Range Settings')
+show_txt = input(true, 'Range Label', group = 'Range Settings')
+
+// Enhanced Stop Loss Settings
+moveStopToEntry = input.bool(false, "Move SL to Entry After TP1", group="Stop Loss Management")
+moveStopToTP1 = input.bool(false, "Move SL to TP1 After Higher TPs", group="Stop Loss Management")
+
+// New Stop Loss Improvement Settings
+minStopDistance = input.float(30, "Minimum Stop Distance (pips)", minval=10, group="Stop Loss Settings")
+widened_atr = input.bool(true, "Use Widened ATR for SL", group="Stop Loss Settings")
+atr_widening_factor = input.float(1.5, "ATR Widening Factor", minval=1.0, maxval=3.0, step=0.1, group="Stop Loss Settings")
+
+// New Volatility Filter
+volatility_filter = input.bool(true, "Use Volatility Filter", group="Filters")
+max_volatility = input.float(1.5, "Max Volatility Multiplier", minval=1.0, group="Filters")
+current_volatility = ta.atr(14) / ta.atr(14)[10]
+is_valid_volatility = not volatility_filter or current_volatility <= max_volatility
+
+// New Trend Filter
+trend_filter = input.bool(true, "Use Trend Filter", group="Filters")
+fast_ema = ta.ema(close, 20)
+slow_ema = ta.ema(close, 50)
+is_uptrend = fast_ema > slow_ema
+is_downtrend = fast_ema < slow_ema
+
+// Time Filter Settings
+volatile_hours = input.bool(true, "Avoid Volatile Hours", group="Time Filters")
+volatile_hour1 = input.int(8, "Volatile Hour 1", minval=0, maxval=23, group="Time Filters")
+volatile_hour2 = input.int(14, "Volatile Hour 2", minval=0, maxval=23, group="Time Filters")
+volatile_hour3 = input.int(defval=0, title="Volatile Hour 3 (Optional)", minval=0, maxval=23, group="Time Filters")
+volatile_hour4 = input.int(defval=0, title="Volatile Hour 4 (Optional)", minval=0, maxval=23, group="Time Filters")
+
+// Custom Time Filter
+current_hour = hour(time)
+is_volatile_hour = volatile_hours and (
+     current_hour == volatile_hour1 or 
+     current_hour == volatile_hour2 or 
+     (volatile_hour3 > 0 and current_hour == volatile_hour3) or 
+     (volatile_hour4 > 0 and current_hour == volatile_hour4)
+     )
+is_valid_time = not is_volatile_hour
+//Timezone
+tz_incr = input.int(-3, 'UTC (+/-)', group = 'Timezone')
+use_exchange = input(false, 'Use Exchange Timezone', group = 'Timezone')
+
+var tz = use_exchange ? syminfo.timezone :
+  str.format('UTC{0}{1}', tz_incr >= 0 ? '+' : '-', math.abs(tz_incr))
+
+// Session Times calculation
+tf = timeframe.period
+
+is_newyork_session = math.sign(nz(time(tf, sesa_ses, tz)))
+is_london_session = math.sign(nz(time(tf, sesb_ses, tz)))
+is_tokyo_session = math.sign(nz(time(tf, sesc_ses, tz)))
+
+// Stop Loss Type Selection
+stopType = input.string("ATR", "Stop Loss Type", options=["ATR", "Fixed Percent", "Indicator"], group="Stop Loss Settings")
+fixedStopPercent = input.float(1.0, "Fixed Stop Loss %", minval=0.1, maxval=100.0, step=0.1, group="Stop Loss Settings")
+atrLen = input.int(14, "ATR Length", minval=1, group="Stop Loss Settings")
+atrRisk = input.float(1.0, "ATR Multiplier", minval=0.1, step=0.1, group="Stop Loss Settings")
+extraStopOffset = input.float(4.0, "Extra Stop Loss Offset (pips)", minval=0.0, step=0.1, group="Stop Loss Settings")
+
+// Trading Days Settings
+trade_sunday = input.bool(false, "Trade on Sunday", group="Trading Days")
+trade_monday = input.bool(true, "Trade on Monday", group="Trading Days")
+trade_tuesday = input.bool(true, "Trade on Tuesday", group="Trading Days")
+trade_wednesday = input.bool(true, "Trade on Wednesday", group="Trading Days")
+trade_thursday = input.bool(true, "Trade on Thursday", group="Trading Days")
+trade_friday = input.bool(true, "Trade on Friday", group="Trading Days")
+trade_saturday = input.bool(false, "Trade on Saturday", group="Trading Days")
+
+// Range Market Detection
+range_enable = input.bool(true, "Enable Range Market Filter", group="Range Market Settings")
+range_length = input.int(14, "Range Period", minval=1, group="Range Market Settings")
+range_threshold = input.float(1.5, "Range ATR Multiplier", minval=0.1, step=0.1, group="Range Market Settings")
+range_period = input.int(5, "Consecutive Bars for Range", minval=1, group="Range Market Settings")
+
+// Exit Strategy Selection
+exitStrategy = input.string("Both", "Exit Strategy", options=["TPs Only", "Next Signal Only", "Both"], group="Exit Strategy")
+
+// Risk Management Inputs
+riskPerTrade = input.float(2.0, "Risk Per Trade (%)", minval=0.1, maxval=100.0, step=0.1, group="Risk Management")
+useTP1 = input.bool(true, "Use TP 1:1", group="Take Profit Management")
+useTP2 = input.bool(true, "Use TP 2:1", group="Take Profit Management")
+useTP3 = input.bool(true, "Use TP 3:1 (Closes on opposite signal)", group="Take Profit Management")
+tp1Percent = input.float(40.0, "TP1 Position Close (%)", minval=1, maxval=100, group="Take Profit Management")
+tp2Percent = input.float(40.0, "TP2 Position Close (%)", minval=1, maxval=100, group="Take Profit Management")
+tp3Percent = input.float(20.0, "TP3 Position Close (%)", minval=1, maxval=100, group="Take Profit Management")
+
+// Original Indicator Parameters
+nbuysell = input.bool(true, "Buy/Sell Signal", group="Strategy Parameters")
+nsensitivity = input.float(2, "Sensitivity", minval=1, maxval=20, group="Strategy Parameters")
+
+// EMA Filters
+useEMA1 = input.bool(false, "استفاده از EMA 1", group="فیلترهای EMA")
+ema1Length = input.int(10, "دوره EMA 1", minval=1, group="فیلترهای EMA")
+useEMA2 = input.bool(false, "استفاده از EMA 2", group="فیلترهای EMA")
+ema2Length = input.int(20, "دوره EMA 2", minval=1, group="فیلترهای EMA")
+useEMA3 = input.bool(false, "استفاده از EMA 3", group="فیلترهای EMA")
+ema3Length = input.int(50, "دوره EMA 3", minval=1, group="فیلترهای EMA")
+
+// Variables for current trade
+var float entry_price = na
+var float lastTP1 = na
+var float lastTP2 = na
+var float lastTP3 = na
+var float lastStop = na
+
+// Variables for TP tracking
+var bool tp1Reached = false
+var bool tp2Reached = false
+var bool tp3Reached = false
+
+// Set session range function from LuxAlgo
+get_range(session, session_name, session_css)=>
+    var t = 0 
+    var max = high
+    var min = low
+    var box bx = na
+    var label lbl = na 
+    
+    if session > session[1]
+        t := time
+        max := high
+        min := low
+
+        bx := box.new(bar_index, max, bar_index, min
+          , bgcolor = color.new(session_css, bg_transp)
+          , border_color = show_outline ? session_css : na
+          , border_style = line.style_dotted)
+
+        if show_txt
+            lbl := label.new(t, max, session_name
+              , xloc = xloc.bar_time
+              , textcolor = session_css
+              , style = label.style_label_down
+              , color = color.new(color.white, 100)
+              , size = size.tiny)
+
+    if session and session == session[1]
+        max := math.max(high, max)
+        min := math.min(low, min)
+
+        box.set_top(bx, max)
+        box.set_rightbottom(bx, bar_index, min)
+
+        if show_txt
+            label.set_xy(lbl, int(math.avg(t, time)), max)
+    
+    [session ? na : max, session ? na : min]
+
+// Supertrend Function
+supertrend(_close, factor, atrLen) =>
+    atr = ta.atr(atrLen)
+    upperBand = _close + factor * atr
+    lowerBand = _close - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+    int direction = na
+    float superTrend = na
+    prevSuperTrend = superTrend[1]
+    if na(atr[1])
+        direction := 1
+    else if prevSuperTrend == prevUpperBand
+        direction := close > upperBand ? -1 : 1
+    else
+        direction := close < lowerBand ? 1 : -1
+    superTrend := direction == -1 ? lowerBand : upperBand
+    [superTrend, direction]
+
+// Calculate Components
+sma4 = ta.sma(close, 8)
+sma5 = ta.sma(close, 9)
+sma9 = ta.sma(close, 13)
+[supertrend, direction] = supertrend(close, nsensitivity*2, 11)
+
+// Calculate EMAs
+ema1 = ta.ema(close, ema1Length)
+ema2 = ta.ema(close, ema2Length)
+ema3 = ta.ema(close, ema3Length)
+
+// Calculate Range Market Conditions
+range_atr = ta.atr(range_length)
+range_highestHigh = ta.highest(high, range_period)
+range_lowestLow = ta.lowest(low, range_period)
+range_size = (range_highestHigh - range_lowestLow) / range_atr
+range_isRangeMarket = range_size < range_threshold
+
+// Get current day of week (1 = Sunday, 7 = Saturday)
+current_day = dayofweek
+
+// Check if trading is allowed on current day
+is_trading_day = switch current_day
+    1 => trade_sunday
+    2 => trade_monday
+    3 => trade_tuesday
+    4 => trade_wednesday
+    5 => trade_thursday
+    6 => trade_friday
+    7 => trade_saturday
+
+// Check if any selected session is active
+is_session_active = (show_sesb and is_london_session == 1) or 
+                   (show_sesa and is_newyork_session == 1) or 
+                   (show_sesc and is_tokyo_session == 1)
+
+// Calculate Signals
+bull = ta.crossover(close, supertrend) and close >= sma9 and nbuysell
+bear = ta.crossunder(close, supertrend) and close <= sma9 and nbuysell
+
+// Apply all filters to signals
+bull := bull and 
+     (not useEMA1 or close > ema1) and 
+     (not useEMA2 or close > ema2) and 
+     (not useEMA3 or close > ema3) and 
+     (not range_enable or not range_isRangeMarket) and
+     is_trading_day and
+     is_session_active and
+     is_valid_volatility and
+     (not trend_filter or is_uptrend) and
+     is_valid_time
+    
+bear := bear and 
+     (not useEMA1 or close < ema1) and 
+     (not useEMA2 or close < ema2) and 
+     (not useEMA3 or close < ema3) and 
+     (not range_enable or not range_isRangeMarket) and
+     is_trading_day and
+     is_session_active and
+     is_valid_volatility and
+     (not trend_filter or is_downtrend) and
+     is_valid_time
+
+// Enhanced Stop Loss calculation
+calculateStopLoss(isLong, includeOffset) =>
+    float stopLevel = na
+    float pipOffset = includeOffset ? extraStopOffset * syminfo.mintick * 10 : 0
+    float minStop = isLong ? close - (minStopDistance * syminfo.mintick * 10) : close + (minStopDistance * syminfo.mintick * 10)
+    
+    if stopType == "ATR"
+        atrValue = ta.atr(atrLen) * (widened_atr ? atrRisk * atr_widening_factor : atrRisk)
+        stopLevel := isLong ? low - atrValue - pipOffset : high + atrValue + pipOffset
+    else if stopType == "Fixed Percent"
+        stopLevel := isLong ? close * (1 - fixedStopPercent/100) - pipOffset : close * (1 + fixedStopPercent/100) + pipOffset
+    else // Indicator
+        stopLevel := isLong ? supertrend - pipOffset : supertrend + pipOffset
+    
+    // Ensure minimum stop distance
+    if isLong
+        stopLevel := math.min(stopLevel, minStop)
+    else
+        stopLevel := math.max(stopLevel, minStop)
+        
+    stopLevel
+
+// Position Size Calculation
+calcPositionSize(entryPrice, stopPrice) =>
+    riskAmount = strategy.equity * (riskPerTrade / 100)
+    positionSize = riskAmount / math.abs(entryPrice - stopPrice)
+    positionSize
+
+// Reset values and calculate levels on new position
+if bull or bear
+    entry_price := close
+    tp1Reached := false
+    tp2Reached := false
+    tp3Reached := false
+    
+    // Calculate stop loss with offset for actual stop
+    lastStop := calculateStopLoss(bull, true)
+    
+    // Calculate stop loss without offset for TP calculations
+    baseStop = calculateStopLoss(bull, false)
+    if bull
+        lastTP1 := close + (close - baseStop)
+        lastTP2 := close + (close - baseStop) * 2
+        lastTP3 := close + (close - baseStop) * 3
+    else
+        lastTP1 := close - (baseStop - close)
+        lastTP2 := close - (baseStop - close) * 2
+        lastTP3 := close - (baseStop - close) * 3
+        
+// Entry Rules
+if bull
+    // Close existing short position
+    if strategy.position_size < 0
+        strategy.close("Short", comment="Exit on Buy Signal")
+    
+    posSize = calcPositionSize(close, lastStop)
+    strategy.entry("Long", strategy.long, qty=posSize)
+    
+    // Cancel only specific exit orders to prevent losing TP and SL
+    strategy.cancel("Long TP1")
+    strategy.cancel("Long TP2")
+    strategy.cancel("Long TP3")
+
+if bear
+    // Close existing long position 
+    if strategy.position_size > 0
+        strategy.close("Long", comment="Exit on Sell Signal")
+        
+    posSize = calcPositionSize(close, lastStop)
+    strategy.entry("Short", strategy.short, qty=posSize)
+    
+    // Cancel only specific exit orders to prevent losing TP and SL
+    strategy.cancel("Short TP1")
+    strategy.cancel("Short TP2")
+    strategy.cancel("Short TP3")
+    
+// Check TP hits and manage stop loss
+if strategy.position_size > 0
+    if high >= lastTP1 and not tp1Reached
+        tp1Reached := true
+        if moveStopToEntry
+            lastStop := entry_price
+    if high >= lastTP2 and not tp2Reached and tp1Reached
+        tp2Reached := true
+        if moveStopToTP1
+            lastStop := lastTP1
+    if high >= lastTP3 and not tp3Reached and tp2Reached
+        tp3Reached := true
+        if moveStopToTP1
+            lastStop := lastTP1
+else if strategy.position_size < 0
+    if low <= lastTP1 and not tp1Reached
+        tp1Reached := true
+        if moveStopToEntry
+            lastStop := entry_price
+    if low <= lastTP2 and not tp2Reached and tp1Reached
+        tp2Reached := true
+        if moveStopToTP1
+            lastStop := lastTP1
+    if low <= lastTP3 and not tp3Reached and tp2Reached
+        tp3Reached := true
+        if moveStopToTP1
+            lastStop := lastTP1
+
+// Take Profit Management
+if strategy.position_size > 0
+    tp1Size = math.abs(strategy.position_size * (tp1Percent / 100))
+    tp2Size = math.abs(strategy.position_size * (tp2Percent / 100))
+    tp3Size = math.abs(strategy.position_size * (tp3Percent / 100))
+    
+    if useTP1
+        strategy.exit("Long TP1", "Long", qty=tp1Size, limit=lastTP1, stop=lastStop, comment="TP1")
+    if useTP2
+        strategy.exit("Long TP2", "Long", qty=tp2Size, limit=lastTP2, stop=lastStop, comment="TP2")
+    if useTP3
+        strategy.exit("Long TP3", "Long", qty=tp3Size, limit=lastTP3, stop=lastStop, comment="TP3")
+
+if strategy.position_size < 0
+    tp1Size = math.abs(strategy.position_size * (tp1Percent / 100))
+    tp2Size = math.abs(strategy.position_size * (tp2Percent / 100))
+    tp3Size = math.abs(strategy.position_size * (tp3Percent / 100))
+    
+    if useTP1
+        strategy.exit("Short TP1", "Short", qty=tp1Size, limit=lastTP1, stop=lastStop, comment="TP1" )
+    if useTP2
+        strategy.exit("Short TP2", "Short", qty=tp2Size, limit=lastTP2, stop=lastStop, comment="TP2" )
+    if useTP3
+        strategy.exit("Short TP3", "Short", qty=tp3Size, limit=lastTP3, stop=lastStop, comment="TP3" )
+    
+// Close position conditions
+if (strategy.position_size > 0 and (tp3Reached or low <= lastStop)) or 
+   (strategy.position_size < 0 and (tp3Reached or high >= lastStop))
+    strategy.close_all()
+    tp1Reached := false
+    tp2Reached := false
+    tp3Reached := false
+
+// Plot Entry Signals
+plotshape(showLevels and bull, title="Buy Signal", text="Buy", style=shape.labelup, location=location.belowbar, color=color.rgb(0, 255, 0), textcolor=color.white, size=size.small)
+plotshape(showLevels and bear, title="Sell Signal", text="Sell", style=shape.labeldown, location=location.abovebar, color=color.rgb(255, 0, 0), textcolor=color.white, size=size.small)
+
+// Plot Different Stop Levels (when not in position)
+var float atrStop = na
+var float fixedStop = na
+
+if barstate.islast
+    atrValue = ta.atr(atrLen) * atrRisk
+    atrStop := low - atrValue
+    fixedStop := close * (1 - fixedStopPercent/100)
+
+// Plot Different Stop Levels
+plot(showLevels ? atrStop : na, "ATR Stop", color=color.new(color.blue, 50), style=plot.style_circles)
+plot(showLevels ? fixedStop : na, "Fixed Stop", color=color.new(color.gray, 50), style=plot.style_circles)
+
+// Plot Active Trade Levels
+plot(showLevels and strategy.position_size != 0 ? lastTP1 : na, "TP1", color=color.green, style=plot.style_circles)
+plot(showLevels and strategy.position_size != 0 ? lastTP2 : na, "TP2", color=color.green, style=plot.style_circles)
+plot(showLevels and strategy.position_size != 0 ? lastTP3 : na, "TP3", color=color.green, style=plot.style_circles)
+plot(showLevels and strategy.position_size != 0 ? lastStop : na, "Active Stop", color=color.red, style=plot.style_circles)
+
+// Plot EMAs
+plot(useEMA1 ? ema1 : na, "EMA 1", color=color.blue, linewidth=1)
+plot(useEMA2 ? ema2 : na, "EMA 2", color=color.orange, linewidth=1)
+plot(useEMA3 ? ema3 : na, "EMA 3", color=color.purple, linewidth=1)
+
+// Draw session ranges
+if show_sesa and sesa_range
+    get_range(is_newyork_session, sesa_txt, sesa_css)
+
+if show_sesb and sesb_range
+    get_range(is_london_session, sesb_txt, sesb_css)
+
+if show_sesc and sesc_range
+    get_range(is_tokyo_session, sesc_txt, sesc_css)
+
