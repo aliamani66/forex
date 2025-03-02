@@ -1,0 +1,96 @@
+//@version=5
+strategy("RSI SuperTrend Strategy", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// RSI Settings
+var showRSITrend = input.bool(true, title="RSI", tooltip="Developed for 1 min TF, Max 5 min", group="ALGOS")
+rsi_lengthR = input.int(14, title='RSI Length', group="RSI", inline='1')
+
+// EMA Settings
+ma0 = input.int(9, title='EMA0', group="EMA", inline='1')
+ma1 = input.int(20, title='EMA1', group="EMA", inline='1')
+ma2 = input.int(50, title='EMA2', group="EMA", inline='2')
+ma3 = input.int(200, title='EMA3', group="EMA", inline='2')
+
+// SuperTrend Parameters
+var superTrend = input.bool(false, title="Show superTrend", group="ALGOS")
+var showsignals = input.bool(title="Show SuperTrend Buy/Sell Signals", defval=true, group="ALGOS")
+Periods = input.int(title="ATR Period", defval=12, step=1, group="SuperTrend")
+Multiplier = input.float(title="ATR Multiplier", step=0.1, defval=3.0, group="SuperTrend")
+
+// Risk Management
+stopLossPercent = input.float(2.0, title='Stop Loss %', minval=0.1, maxval=10, group="Risk Management")
+
+// Fetch data from different timeframes
+rsi_source60 = request.security(syminfo.tickerid, '60', close, barmerge.gaps_off, barmerge.lookahead_on)   
+rsi_source30 = request.security(syminfo.tickerid, '30', close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source15 = request.security(syminfo.tickerid, '15', close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source1 = request.security(syminfo.tickerid, '1', close, barmerge.gaps_off, barmerge.lookahead_on)  
+
+// Calculate RSI on different timeframes
+rsi60 = ta.rsi(rsi_source60, rsi_lengthR)
+rsi30 = ta.rsi(rsi_source30, rsi_lengthR)
+rsi15 = ta.rsi(rsi_source15, rsi_lengthR)
+rsi1 = ta.rsi(rsi_source1, rsi_lengthR)
+
+// Timeframe Validation
+isValidTimeframe = timeframe.isintraday and timeframe.multiplier <= 5 and showRSITrend
+
+// SuperTrend Calculation
+atr = ta.atr(Periods)
+src = hl2
+up = src - (Multiplier * atr)
+up1 = nz(up[1], up)
+up := close[1] > up1 ? math.max(up, up1) : up
+dn = src + (Multiplier * atr)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? math.min(dn, dn1) : dn
+
+// Trend Calculation
+trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : 
+         trend == 1 and close < up1 ? -1 : 
+         trend
+
+// Conditions
+condBuy = rsi60 > 60 and rsi30 > 60 and rsi1 < 40 and rsi15 > rsi1
+condSell = rsi60 < 40 and rsi30 < 40 and rsi1 > 60 and rsi15 < rsi1
+
+// Entry Logic with direct alerts
+if (barstate.isconfirmed and isValidTimeframe and condBuy)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=strategy.position_avg_price * (1 - stopLossPercent / 100))
+    alert("POSITION OPENED: LONG at " + str.tostring(close), alert.freq_once_per_bar)
+
+if (barstate.isconfirmed and isValidTimeframe and condSell)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=strategy.position_avg_price * (1 + stopLossPercent / 100))
+    alert("POSITION OPENED: SHORT at " + str.tostring(close), alert.freq_once_per_bar)
+
+// Exit Logic with direct alerts
+if (barstate.isconfirmed and (rsi60 < 40 or (rsi1 > 75 and rsi30 < 45)) and strategy.position_size > 0)
+    strategy.close("Long")
+    alert("POSITION CLOSED: LONG at " + str.tostring(close), alert.freq_once_per_bar)
+
+if (barstate.isconfirmed and (rsi60 > 60 or (rsi1 < 25 and rsi30 > 55)) and strategy.position_size < 0)
+    strategy.close("Short")
+    alert("POSITION CLOSED: SHORT at " + str.tostring(close), alert.freq_once_per_bar)
+
+// ردیابی فعال شدن حد ضرر
+var float lastPositionSize = 0.0
+if (barstate.isconfirmed)
+    if (strategy.position_size == 0 and lastPositionSize > 0)
+        if (not (rsi60 < 40 or (rsi1 > 75 and rsi30 < 45)))  // اگر با سیگنال خروج بسته نشده باشد
+            alert("STOP LOSS TRIGGERED: LONG position closed at " + str.tostring(close), alert.freq_once_per_bar)
+    
+    if (strategy.position_size == 0 and lastPositionSize < 0)
+        if (not (rsi60 > 60 or (rsi1 < 25 and rsi30 > 55)))  // اگر با سیگنال خروج بسته نشده باشد
+            alert("STOP LOSS TRIGGERED: SHORT position closed at " + str.tostring(close), alert.freq_once_per_bar)
+    
+    lastPositionSize := strategy.position_size
+
+// آلرت‌های شرطی ساده
+alertcondition(barstate.isconfirmed and isValidTimeframe and condBuy, title="RSI Buy Signal", message="RSI Buy Signal")
+alertcondition(barstate.isconfirmed and isValidTimeframe and condSell, title="RSI Sell Signal", message="RSI Sell Signal")
+alertcondition(barstate.isconfirmed and (rsi60 < 40 or (rsi1 > 75 and rsi30 < 45)), title="Close Long Condition", message="Close Long Condition")
+alertcondition(barstate.isconfirmed and (rsi60 > 60 or (rsi1 < 25 and rsi30 > 55)), title="Close Short Condition", message="Close Short Condition")
