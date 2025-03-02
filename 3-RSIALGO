@@ -1,0 +1,186 @@
+//@version=5
+indicator("RSI ALGO",overlay=true)
+
+var showRSITrend= input.bool(true, title="RSI",tooltip="Developed for 1 min TF, Max 5 min",group="ALGOS")
+rsi_source60 =  request.security(syminfo.tickerid,'60',close, barmerge.gaps_off, barmerge.lookahead_on)   
+rsi_source30 =  request.security(syminfo.tickerid,'30',close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source15 =  request.security(syminfo.tickerid,'15',close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source1 =  request.security(syminfo.tickerid,'1',close, barmerge.gaps_off, barmerge.lookahead_on)  
+emas = input.bool(false, title="Show EMA",group="ALGOS")
+emasig = input.bool(true, title="Show EMA Crossover",group="ALGOS")
+
+rsi_lengthR = input.int(14,title='RSI Length',group = "RSI",inline='1')
+
+ma0 = input.int(9,title='EMA0',group = "EMA",inline='1')
+ma1 = input.int(20,title='EMA1',group = "EMA",inline='1')
+ma2 = input.int(50,title='EMA2',group = "EMA",inline='2')
+ma3 = input.int(200,title='EMA3',group = "EMA",inline='2')
+
+superTrend = input.bool(false, title="Show superTrend",group="ALGOS")
+showsignals = input.bool(title="Show SuperTrend Buy/Sell Signals", defval=true,group="ALGOS")
+Periods = input.int(title="ATR Period", defval=12,step=1,group="SuperTrend")
+src = input.source(hl2, title="Source",group="SuperTrend")
+Multiplier = input.float(title="ATR Multiplier", step=0.1, defval=3.0,group="SuperTrend")
+
+var rsiBuy=color.new(color.green,0)
+var rsiSell=color.new(color.red,0)
+var rsiBuyCandle=input.color(defval=color.new(color.black,20), title='Buy Bar', group='Colors', inline='1')
+var rsiSellCandle=input.color(defval=color.new(color.blue,20), title='Sell Bar', group='Colors', inline='1')
+var rsiAlertCandle=input.color(defval=color.new(color.yellow,20), title='Alert Bar', group='Colors', inline='1')
+
+rsi60 = ta.rsi(rsi_source60, rsi_lengthR)
+rsi30 = ta.rsi(rsi_source30, rsi_lengthR)
+rsi15 = ta.rsi(rsi_source15, rsi_lengthR)
+rsi1 = ta.rsi(rsi_source1, rsi_lengthR)
+
+color colorbarrsi=na
+
+var indicB=false
+var indicS=false
+var condBuy=false
+var condSell=false
+var int rih=ta.change(dayofweek(time),1)?bar_index:bar_index[1]
+
+var float vrih=0
+var float vril=0
+
+var line rlinekh=na
+var line rlinekl=na
+line.delete(rlinekh)
+line.delete(rlinekl)
+
+condBuy:=rsi60>60 and rsi30>60 and rsi1<40 and rsi15>rsi1
+condSell:=rsi60<40 and rsi30<40 and rsi1>60 and rsi15<rsi1
+
+if timeframe.isintraday and timeframe.multiplier<=5 and showRSITrend
+    showRSITrend:=true
+else
+    showRSITrend:=false
+    
+if condBuy and showRSITrend
+    colorbarrsi:=rsiBuyCandle
+    condSell:=false
+    indicB:=true
+    indicS:=false
+
+if condSell and showRSITrend
+    condBuy:=false
+    colorbarrsi:=rsiSellCandle
+    indicB:=false
+    indicS:=true
+
+// شرایط خروج از معامله خرید
+var bool longExitOnce = false
+var bool longExit1 = false
+if indicB and rsi1>75 and rsi30<45 and showRSITrend and not longExitOnce
+    colorbarrsi:=rsiAlertCandle
+    longExitOnce := true
+    longExit1 := true
+    label.new(bar_index, high, yloc=yloc.abovebar, text="LONG EXIT ↓", 
+              style=label.style_label_down, color=color.red, 
+              textcolor=color.white, size=size.small)
+    alert("LONG EXIT", alert.freq_once_per_bar_close)
+    indicB := false
+
+var bool additionalLongExitOnce = false
+var bool longExit2 = false
+if rsi60<40 and indicB and showRSITrend and not additionalLongExitOnce
+    colorbarrsi:=rsiAlertCandle
+    additionalLongExitOnce := true
+    longExit2 := true
+    label.new(bar_index, high, yloc=yloc.abovebar, text="LONG EXIT ↓", 
+              style=label.style_label_down, color=color.red, 
+              textcolor=color.white, size=size.small)
+    alert("LONG EXIT", alert.freq_once_per_bar_close)
+    indicB := false
+
+// شرایط خروج از معامله فروش
+var bool shortExitOnce = false
+var bool shortExit1 = false
+if indicS and rsi1<25 and rsi30>55 and showRSITrend and not shortExitOnce
+    colorbarrsi:=rsiAlertCandle
+    shortExitOnce := true
+    shortExit1 := true
+    label.new(bar_index, low, yloc=yloc.belowbar, text="SHORT EXIT ↑", 
+              style=label.style_label_up, color=color.green, 
+              textcolor=color.white, size=size.small)
+    alert("SHORT EXIT", alert.freq_once_per_bar_close)
+    indicS := false
+
+var bool additionalShortExitOnce = false
+var bool shortExit2 = false
+if rsi60>60 and indicS and showRSITrend and not additionalShortExitOnce
+    colorbarrsi:=rsiAlertCandle
+    additionalShortExitOnce := true
+    shortExit2 := true
+    label.new(bar_index, low, yloc=yloc.belowbar, text="SHORT EXIT ↑", 
+              style=label.style_label_up, color=color.green, 
+              textcolor=color.white, size=size.small)
+    alert("SHORT EXIT", alert.freq_once_per_bar_close)
+    indicS := false
+
+// Reset flags for next trade
+if not(indicB or indicS)
+    longExitOnce := false
+    additionalLongExitOnce := false
+    shortExitOnce := false
+    additionalShortExitOnce := false
+    longExit1 := false
+    longExit2 := false
+    shortExit1 := false
+    shortExit2 := false
+
+if condBuy and showRSITrend and ta.change(condBuy,1) 
+    label.new(bar_index, low, yloc=yloc.belowbar, text="RSI Buy", style=label.style_label_up, color=rsiBuy, textcolor=color.white, size=size.small)
+
+if condSell and showRSITrend and ta.change(condSell,1) 
+    label.new(bar_index, high, yloc=yloc.abovebar, text="RSI Sell", style=label.style_label_down, color=rsiSell, textcolor=color.white, size=size.small)
+
+if(showRSITrend)
+    rlinekh := line.new(x1=rih, y1=vrih, x2=bar_index, y2=vrih, xloc=xloc.bar_index, color=color.new(color.purple,10), style=line.style_dashed, width=1, extend=extend.right)
+    rlinekl := line.new(x1=rih, y1=vril, x2=bar_index, y2=vril, xloc=xloc.bar_index, color=color.new(color.purple,10), style=line.style_dashed, width=1, extend=extend.right)
+
+var color_ema0 = input.color(defval=color.new(color.blue,30), title='EMA 0', group='Colors',inline='2')
+var color_ema1 = input.color(defval=color.new(color.green,30), title='EMA 1', group='Colors',inline='2')
+var color_ema2 = input.color(defval=color.new(color.yellow,30), title='EMA 2', group='Colors',inline='3')
+var color_ema3 = input.color(defval=color.new(color.red,30), title='EMA 3', group='Colors',inline='3')
+
+ema0 = ta.ema(close, ma0)
+ema1 = ta.ema(close, ma1)
+ema2 = ta.ema(close, ma2)
+ema3 = ta.ema(close, ma3)
+ma_plot0 = plot(emas?ema0:na, title="EMA0", color=color_ema0,linewidth=2) 
+ma_plot1 = plot(emas?ema1:na, title="EMA1", color=color_ema1,linewidth=2) 
+ma_plot2 = plot(emas?ema2:na , title="EMA2", color=color_ema2,linewidth=1) 
+ma_plot3 = plot(emas?ema3:na , title="EMA3", color=color_ema3,linewidth=1) 
+
+atr2 = ta.sma(ta.tr, Periods)
+atr= ta.atr(Periods) 
+up=src-(Multiplier*atr)
+up1 = nz(up[1],up)
+up := close[1] > up1 ? math.max(up,up1) : up
+dn=src+(Multiplier*atr)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? math.min(dn, dn1) : dn
+trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+upPlot = plot(trend == 1 and superTrend? up : na, title="Up Trend", style=plot.style_linebr, linewidth=2, color=color.green)
+buySignal = trend == 1 and trend[1] == -1 
+dnPlot = plot(trend == 1 ? na :superTrend? dn:na, title="Down Trend", style=plot.style_linebr, linewidth=2, color=color.new(color.red,10))
+sellSignal = trend == -1 and trend[1] == 1
+
+// آلرت‌های SuperTrend
+alertcondition(buySignal and showsignals, title="SuperTrend Buy", message="SuperTrend Buy!")
+alertcondition(sellSignal and showsignals, title="SuperTrend Sell", message="SuperTrend Sell!")
+changeCond = trend != trend[1]
+// حذف آلرت SuperTrend Direction Change
+
+// اضافه کردن آلرت‌های جدید برای خروج از معاملات
+// آلرت خروج از خرید
+alertcondition(longExit1 or longExit2, title="RSI Long Exit", message="EXIT LONG POSITION!")
+
+// آلرت خروج از فروش
+alertcondition(shortExit1 or shortExit2, title="RSI Short Exit", message="EXIT SHORT POSITION!")
+
+barcolor(colorbarrsi)

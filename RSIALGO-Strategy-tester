@@ -1,0 +1,92 @@
+//@version=5
+strategy("RSI SuperTrend Strategy", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// RSI Settings
+var showRSITrend = input.bool(true, title="RSI", tooltip="Developed for 1 min TF, Max 5 min", group="ALGOS")
+rsi_lengthR = input.int(14, title='RSI Length', group="RSI", inline='1')
+
+// EMA Settings
+ma0 = input.int(9, title='EMA0', group="EMA", inline='1')
+ma1 = input.int(20, title='EMA1', group="EMA", inline='1')
+ma2 = input.int(50, title='EMA2', group="EMA", inline='2')
+ma3 = input.int(200, title='EMA3', group="EMA", inline='2')
+
+// SuperTrend Parameters
+var superTrend = input.bool(false, title="Show superTrend", group="ALGOS")
+var showsignals = input.bool(title="Show SuperTrend Buy/Sell Signals", defval=true, group="ALGOS")
+Periods = input.int(title="ATR Period", defval=12, step=1, group="SuperTrend")
+Multiplier = input.float(title="ATR Multiplier", step=0.1, defval=3.0, group="SuperTrend")
+
+// Color Settings
+var rsiBuyCandle = input.color(defval=color.new(color.black,20), title='Buy Bar', group='Colors', inline='1')
+var rsiSellCandle = input.color(defval=color.new(color.blue,20), title='Sell Bar', group='Colors', inline='1')
+var rsiAlertCandle = input.color(defval=color.new(color.yellow,20), title='Alert Bar', group='Colors', inline='1')
+
+// EMA Color Settings
+var color_ema0 = input.color(defval=color.new(color.blue,30), title='EMA 0', group='Colors', inline='2')
+var color_ema1 = input.color(defval=color.new(color.green,30), title='EMA 1', group='Colors', inline='2')
+var color_ema2 = input.color(defval=color.new(color.yellow,30), title='EMA 2', group='Colors', inline='3')
+var color_ema3 = input.color(defval=color.new(color.red,30), title='EMA 3', group='Colors', inline='3')
+
+// Risk Management
+stopLossPercent = input.float(2.0, title='Stop Loss %', minval=0.1, maxval=10, group="Risk Management")
+
+// Fetch data from different timeframes
+rsi_source60 = request.security(syminfo.tickerid, '60', close, barmerge.gaps_off, barmerge.lookahead_on)   
+rsi_source30 = request.security(syminfo.tickerid, '30', close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source15 = request.security(syminfo.tickerid, '15', close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source1 = request.security(syminfo.tickerid, '1', close, barmerge.gaps_off, barmerge.lookahead_on)  
+
+// Calculate RSI on different timeframes
+rsi60 = ta.rsi(rsi_source60, rsi_lengthR)
+rsi30 = ta.rsi(rsi_source30, rsi_lengthR)
+rsi15 = ta.rsi(rsi_source15, rsi_lengthR)
+rsi1 = ta.rsi(rsi_source1, rsi_lengthR)
+
+// Timeframe Validation
+isValidTimeframe = timeframe.isintraday and timeframe.multiplier <= 5 and showRSITrend
+
+// SuperTrend Calculation
+atr = ta.atr(Periods)
+src = hl2
+up = src - (Multiplier * atr)
+up1 = nz(up[1], up)
+up := close[1] > up1 ? math.max(up, up1) : up
+dn = src + (Multiplier * atr)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? math.min(dn, dn1) : dn
+
+// Trend Calculation
+trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : 
+         trend == 1 and close < up1 ? -1 : 
+         trend
+
+// SuperTrend Signals
+superTrendBuy = trend == 1 and trend[1] == -1
+superTrendSell = trend == -1 and trend[1] == 1
+
+// Conditions
+condBuy = rsi60 > 60 and rsi30 > 60 and rsi1 < 40 and rsi15 > rsi1
+condSell = rsi60 < 40 and rsi30 < 40 and rsi1 > 60 and rsi15 < rsi1
+
+// Entry and Exit Logic
+if (isValidTimeframe and condBuy)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=strategy.position_avg_price * (1 - stopLossPercent / 100))
+
+if (isValidTimeframe and condSell)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=strategy.position_avg_price * (1 + stopLossPercent / 100))
+
+// Additional Exit Conditions
+if (rsi60 < 40 or (rsi1 > 75 and rsi30 < 45))
+    strategy.close("Long")
+
+if (rsi60 > 60 or (rsi1 < 25 and rsi30 > 55))
+    strategy.close("Short")
+
+// Visualization
+plotshape(isValidTimeframe and condBuy, title="Buy Signal", location=location.belowbar, style=shape.triangleup, size=size.small, color=color.green)
+plotshape(isValidTimeframe and condSell, title="Sell Signal", location=location.abovebar, style=shape.triangledown, size=size.small, color=color.red)
