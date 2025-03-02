@@ -1,0 +1,411 @@
+//+------------------------------------------------------------------+
+//|                                         RSI_SuperTrend_EA.mq5 |
+//|                      تبدیل شده از استراتژی TradingView به MQL5 |
+//+------------------------------------------------------------------+
+#property copyright "RSI SuperTrend Strategy"
+#property link      ""
+#property version   "1.00"
+
+// پارامترهای ورودی
+input bool   ShowRSITrend = true;        // RSI
+input string RSITooltip = "Developed for 1 min TF, Max 5 min"; // RSI Tooltip
+input int    RSI_Length = 14;            // RSI Length
+input int    EMA0 = 9;                   // EMA0
+input int    EMA1 = 20;                  // EMA1
+input int    EMA2 = 50;                  // EMA2
+input int    EMA3 = 200;                 // EMA3
+input bool   ShowSuperTrend = false;     // Show SuperTrend
+input bool   ShowSignals = true;         // Show SuperTrend Buy/Sell Signals
+input int    ATR_Period = 12;            // ATR Period
+input double ATR_Multiplier = 3.0;       // ATR Multiplier
+input double StopLossPercent = 2.0;      // Stop Loss %
+input double LotSize = 0.1;              // حجم معامله
+
+// هندل‌های اندیکاتورها
+int rsi60_handle, rsi30_handle, rsi15_handle, rsi1_handle;
+int atr_handle;
+
+// بافرهای اندیکاتورها
+double rsi60_buffer[], rsi30_buffer[], rsi15_buffer[], rsi1_buffer[];
+double atr_buffer[];
+
+// متغیرهای SuperTrend
+double up[], dn[], trend[];
+
+// متغیرهای وضعیت
+bool inLongPosition = false;
+bool inShortPosition = false;
+bool validTimeframe = false;
+datetime last_bar_time = 0;
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   // بررسی تایم فریم مناسب
+   if((Period() <= PERIOD_M5) && ShowRSITrend)
+      validTimeframe = true;
+   else
+      validTimeframe = false;
+      
+   // مقداردهی اولیه اندیکاتورها
+   rsi60_handle = iRSI(Symbol(), PERIOD_H1, RSI_Length, PRICE_CLOSE);
+   rsi30_handle = iRSI(Symbol(), PERIOD_M30, RSI_Length, PRICE_CLOSE);
+   rsi15_handle = iRSI(Symbol(), PERIOD_M15, RSI_Length, PRICE_CLOSE);
+   rsi1_handle = iRSI(Symbol(), PERIOD_M1, RSI_Length, PRICE_CLOSE);
+   
+   atr_handle = iATR(Symbol(), PERIOD_CURRENT, ATR_Period);
+   
+   // تخصیص آرایه‌ها
+   ArraySetAsSeries(rsi60_buffer, true);
+   ArraySetAsSeries(rsi30_buffer, true);
+   ArraySetAsSeries(rsi15_buffer, true);
+   ArraySetAsSeries(rsi1_buffer, true);
+   
+   ArraySetAsSeries(atr_buffer, true);
+   
+   // مقداردهی اولیه آرایه‌های SuperTrend
+   ArrayResize(up, 100);
+   ArrayResize(dn, 100);
+   ArrayResize(trend, 100);
+   ArraySetAsSeries(up, true);
+   ArraySetAsSeries(dn, true);
+   ArraySetAsSeries(trend, true);
+   
+   trend[0] = 1; // مقدار اولیه روند
+   
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   // پاکسازی منابع
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // بررسی نتیجه کندل جدید
+   bool newBar = IsNewBar();
+   
+   // اگر کندل جدید نیست، کاری انجام نده
+   if(!newBar) return;
+   
+   // دریافت مقادیر اندیکاتورها
+   CopyBuffer(rsi60_handle, 0, 0, 3, rsi60_buffer);
+   CopyBuffer(rsi30_handle, 0, 0, 3, rsi30_buffer);
+   CopyBuffer(rsi15_handle, 0, 0, 3, rsi15_buffer);
+   CopyBuffer(rsi1_handle, 0, 0, 3, rsi1_buffer);
+   
+   CopyBuffer(atr_handle, 0, 0, 3, atr_buffer);
+   
+   // محاسبه SuperTrend
+   CalculateSuperTrend();
+   
+   // شرایط خرید و فروش
+   bool condBuy = rsi60_buffer[0] > 60 && rsi30_buffer[0] > 60 && rsi1_buffer[0] < 40 && rsi15_buffer[0] > rsi1_buffer[0];
+   bool condSell = rsi60_buffer[0] < 40 && rsi30_buffer[0] < 40 && rsi1_buffer[0] > 60 && rsi15_buffer[0] < rsi1_buffer[0];
+   
+   // شرایط خروج
+   bool longExit = rsi60_buffer[0] < 40 || (rsi1_buffer[0] > 75 && rsi30_buffer[0] < 45);
+   bool shortExit = rsi60_buffer[0] > 60 || (rsi1_buffer[0] < 25 && rsi30_buffer[0] > 55);
+   
+   // بررسی وضعیت معاملات فعلی
+   CheckPositionStatus();
+   
+   // ورود به خرید
+   if(condBuy && validTimeframe && !inLongPosition && !inShortPosition)
+   {
+      Buy();
+      SendAlert("POSITION OPENED: LONG at " + DoubleToString(SymbolInfoDouble(Symbol(), SYMBOL_ASK), _Digits));
+   }
+   
+   // ورود به فروش
+   if(condSell && validTimeframe && !inShortPosition && !inLongPosition)
+   {
+      Sell();
+      SendAlert("POSITION OPENED: SHORT at " + DoubleToString(SymbolInfoDouble(Symbol(), SYMBOL_BID), _Digits));
+   }
+   
+   // خروج از خرید
+   if(longExit && inLongPosition)
+   {
+      CloseAllBuyPositions();
+      SendAlert("POSITION CLOSED: LONG at " + DoubleToString(SymbolInfoDouble(Symbol(), SYMBOL_BID), _Digits));
+   }
+   
+   // خروج از فروش
+   if(shortExit && inShortPosition)
+   {
+      CloseAllSellPositions();
+      SendAlert("POSITION CLOSED: SHORT at " + DoubleToString(SymbolInfoDouble(Symbol(), SYMBOL_ASK), _Digits));
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تابع بررسی کندل جدید                                            |
+//+------------------------------------------------------------------+
+bool IsNewBar()
+{
+   datetime current_time = iTime(Symbol(), Period(), 0);
+   
+   if(last_bar_time == 0)
+   {
+      last_bar_time = current_time;
+      return false;
+   }
+   
+   if(current_time != last_bar_time)
+   {
+      last_bar_time = current_time;
+      return true;
+   }
+   
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| تابع بررسی وضعیت معاملات                                        |
+//+------------------------------------------------------------------+
+void CheckPositionStatus()
+{
+   inLongPosition = false;
+   inShortPosition = false;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(!PositionSelectByTicket(ticket)) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != Symbol()) continue;
+      
+      long positionType = PositionGetInteger(POSITION_TYPE);
+      
+      if(positionType == POSITION_TYPE_BUY)
+         inLongPosition = true;
+      else if(positionType == POSITION_TYPE_SELL)
+         inShortPosition = true;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تابع معامله خرید                                                |
+//+------------------------------------------------------------------+
+void Buy()
+{
+   double ask = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+   double stopLoss = ask * (1 - StopLossPercent / 100);
+   
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
+   
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = Symbol();
+   request.volume = LotSize;
+   request.type = ORDER_TYPE_BUY;
+   request.price = ask;
+   request.sl = stopLoss;
+   request.deviation = 5;
+   request.type_filling = ORDER_FILLING_FOK;
+   request.comment = "RSI SuperTrend Buy";
+   
+   bool success = OrderSend(request, result);
+   
+   if(success)
+   {
+      inLongPosition = true;
+      Print("Buy order placed successfully. OrderID: ", result.order);
+   }
+   else
+   {
+      Print("Error placing buy order. Error code: ", GetLastError());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تابع معامله فروش                                               |
+//+------------------------------------------------------------------+
+void Sell()
+{
+   double bid = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   double stopLoss = bid * (1 + StopLossPercent / 100);
+   
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
+   
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = Symbol();
+   request.volume = LotSize;
+   request.type = ORDER_TYPE_SELL;
+   request.price = bid;
+   request.sl = stopLoss;
+   request.deviation = 5;
+   request.type_filling = ORDER_FILLING_FOK;
+   request.comment = "RSI SuperTrend Sell";
+   
+   bool success = OrderSend(request, result);
+   
+   if(success)
+   {
+      inShortPosition = true;
+      Print("Sell order placed successfully. OrderID: ", result.order);
+   }
+   else
+   {
+      Print("Error placing sell order. Error code: ", GetLastError());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تابع بستن معاملات خرید                                         |
+//+------------------------------------------------------------------+
+void CloseAllBuyPositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(!PositionSelectByTicket(ticket)) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != Symbol()) continue;
+      
+      long positionType = PositionGetInteger(POSITION_TYPE);
+      
+      if(positionType != POSITION_TYPE_BUY) continue;
+      
+      MqlTradeRequest request = {};
+      MqlTradeResult result = {};
+      
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = Symbol();
+      request.volume = PositionGetDouble(POSITION_VOLUME);
+      request.type = ORDER_TYPE_SELL;
+      request.price = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+      request.position = ticket;
+      request.deviation = 5;
+      request.comment = "Close Buy Position";
+      
+      bool success = OrderSend(request, result);
+      
+      if(success)
+      {
+         inLongPosition = false;
+         Print("Buy position closed successfully. Position ID: ", ticket);
+      }
+      else
+      {
+         Print("Error closing buy position. Error code: ", GetLastError());
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تابع بستن معاملات فروش                                         |
+//+------------------------------------------------------------------+
+void CloseAllSellPositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(!PositionSelectByTicket(ticket)) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != Symbol()) continue;
+      
+      long positionType = PositionGetInteger(POSITION_TYPE);
+      
+      if(positionType != POSITION_TYPE_SELL) continue;
+      
+      MqlTradeRequest request = {};
+      MqlTradeResult result = {};
+      
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = Symbol();
+      request.volume = PositionGetDouble(POSITION_VOLUME);
+      request.type = ORDER_TYPE_BUY;
+      request.price = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+      request.position = ticket;
+      request.deviation = 5;
+      request.comment = "Close Sell Position";
+      
+      bool success = OrderSend(request, result);
+      
+      if(success)
+      {
+         inShortPosition = false;
+         Print("Sell position closed successfully. Position ID: ", ticket);
+      }
+      else
+      {
+         Print("Error closing sell position. Error code: ", GetLastError());
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تابع محاسبه سوپرترند                                           |
+//+------------------------------------------------------------------+
+void CalculateSuperTrend()
+{
+   // دریافت داده‌های قیمت
+   double high[], low[], close[];
+   ArraySetAsSeries(high, true);
+   ArraySetAsSeries(low, true);
+   ArraySetAsSeries(close, true);
+   
+   CopyHigh(Symbol(), PERIOD_CURRENT, 0, 100, high);
+   CopyLow(Symbol(), PERIOD_CURRENT, 0, 100, low);
+   CopyClose(Symbol(), PERIOD_CURRENT, 0, 100, close);
+   
+   // محاسبه سوپرترند
+   for(int i = 99; i >= 0; i--)
+   {
+      double src = (high[i] + low[i]) / 2.0; // HL2
+      
+      if(i == 99)
+      {
+         up[i] = src - (ATR_Multiplier * atr_buffer[i]);
+         dn[i] = src + (ATR_Multiplier * atr_buffer[i]);
+         trend[i] = 1;
+         continue;
+      }
+      
+      // محاسبه خطوط سوپرترند
+      up[i] = src - (ATR_Multiplier * atr_buffer[i]);
+      dn[i] = src + (ATR_Multiplier * atr_buffer[i]);
+      
+      // تنظیم خطوط بر اساس روند
+      up[i] = (close[i+1] > up[i+1]) ? MathMax(up[i], up[i+1]) : up[i];
+      dn[i] = (close[i+1] < dn[i+1]) ? MathMin(dn[i], dn[i+1]) : dn[i];
+      
+      // تعیین روند
+      if(close[i] > dn[i+1] && trend[i+1] == -1)
+         trend[i] = 1;
+      else if(close[i] < up[i+1] && trend[i+1] == 1)
+         trend[i] = -1;
+      else
+         trend[i] = trend[i+1];
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تابع ارسال آلرت                                                 |
+//+------------------------------------------------------------------+
+void SendAlert(string message)
+{
+   Alert(message);
+   // می‌توانید کد ارسال پیامک یا ایمیل را نیز اضافه کنید
+   // SendMail("RSI SuperTrend Alert", message);
+   // SendNotification(message);
+}
+//+------------------------------------------------------------------+
