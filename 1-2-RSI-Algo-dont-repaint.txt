@@ -139,6 +139,7 @@ if ta.barssince(condBuy and showRSITrend) == 0
               color=rsiBuy,
               textcolor=color.white,
               size=size.small)
+    alert("RSI Buy Signal", alert.freq_once_per_bar_close)
 
 if ta.barssince(condSell and showRSITrend) == 0
     label.new(bar_index, high,
@@ -148,6 +149,7 @@ if ta.barssince(condSell and showRSITrend) == 0
               color=rsiSell,
               textcolor=color.white,
               size=size.small)
+    alert("RSI Sell Signal", alert.freq_once_per_bar_close)
 
 // EMA Calculations
 ema0 = ta.ema(close, ma0)
