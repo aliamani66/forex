@@ -1,0 +1,252 @@
+//@version=5
+indicator("RSI ALGO Pro", overlay=true)
+
+// Group: RSI Settings
+var showRSITrend = input.bool(true, title="Enable RSI Trend", tooltip="Developed for 1-5 min Timeframes", group="RSI Settings")
+rsi_lengthR = input.int(14, title='RSI Length', group="RSI Settings", inline='1')
+
+// Timeframe Security Inputs
+rsi_source60 = request.security(syminfo.tickerid, '60', close, barmerge.gaps_off, barmerge.lookahead_on)   
+rsi_source30 = request.security(syminfo.tickerid, '30', close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source15 = request.security(syminfo.tickerid, '15', close, barmerge.gaps_off, barmerge.lookahead_on)  
+rsi_source1 = request.security(syminfo.tickerid, '1', close, barmerge.gaps_off, barmerge.lookahead_on)  
+
+// EMA Settings
+var emas = input.bool(false, title="Show EMA", group="EMA Settings")
+var emasig = input.bool(true, title="Show EMA Crossover", group="EMA Settings")
+ma0 = input.int(9, title='EMA0', group="EMA Settings", inline='1')
+ma1 = input.int(20, title='EMA1', group="EMA Settings", inline='1')
+ma2 = input.int(50, title='EMA2', group="EMA Settings", inline='2')
+ma3 = input.int(200, title='EMA3', group="EMA Settings", inline='2')
+
+// SuperTrend Settings
+var superTrend = input.bool(false, title="Show SuperTrend", group="SuperTrend Settings")
+var showsignals = input.bool(true, title="Show SuperTrend Signals", group="SuperTrend Settings")
+Periods = input.int(12, title="ATR Period", step=1, group="SuperTrend Settings")
+src = input.source(hl2, title="Source", group="SuperTrend Settings")
+Multiplier = input.float(3.0, title="ATR Multiplier", step=0.1, group="SuperTrend Settings")
+
+// Color Settings
+var rsiBuy = color.new(color.green, 0)
+var rsiSell = color.new(color.red, 0)
+var rsiBuyCandle = input.color(defval=color.new(color.black, 20), title='Buy Bar', group='Color Settings', inline='1')
+var rsiSellCandle = input.color(defval=color.new(color.blue, 20), title='Sell Bar', group='Color Settings', inline='1')
+var rsiAlertCandle = input.color(defval=color.new(color.yellow, 20), title='Alert Bar', group='Color Settings', inline='1')
+
+var color_ema0 = input.color(defval=color.new(color.blue, 30), title='EMA 0', group='Color Settings', inline='2')
+var color_ema1 = input.color(defval=color.new(color.green, 30), title='EMA 1', group='Color Settings', inline='2')
+var color_ema2 = input.color(defval=color.new(color.yellow, 30), title='EMA 2', group='Color Settings', inline='3')
+var color_ema3 = input.color(defval=color.new(color.red, 30), title='EMA 3', group='Color Settings', inline='3')
+
+// RSI Calculations
+rsi60 = ta.rsi(rsi_source60, rsi_lengthR)
+rsi30 = ta.rsi(rsi_source30, rsi_lengthR)
+rsi15 = ta.rsi(rsi_source15, rsi_lengthR)
+rsi1 = ta.rsi(rsi_source1, rsi_lengthR)
+
+// State Variables
+var color colorbarrsi = na
+var bool indicB = false
+var bool indicS = false
+var int rih = ta.change(dayofweek(time), 1) ? bar_index : bar_index[1]
+var float vrih = 0
+var float vril = 0
+
+// Line Cleanup
+var line rlinekh = na
+var line rlinekl = na
+line.delete(rlinekh)
+line.delete(rlinekl)
+
+// RSI Conditions
+condBuy = rsi60 > 60 and rsi30 > 60 and rsi1 < 40 and rsi15 > rsi1
+condSell = rsi60 < 40 and rsi30 < 40 and rsi1 > 60 and rsi15 < rsi1
+
+// Timeframe Validation
+isValidTimeframe = timeframe.isintraday and timeframe.multiplier <= 5
+
+// Update Show RSI Trend
+showRSITrend := isValidTimeframe ? showRSITrend : false
+
+// Buy/Sell Logic
+if condBuy and showRSITrend
+    colorbarrsi := rsiBuyCandle
+    condSell := false
+    indicB := true
+    indicS := false
+
+if condSell and showRSITrend
+    condBuy := false
+    colorbarrsi := rsiSellCandle
+    indicB := false
+    indicS := true
+
+// Buy Alert Condition
+if indicB and rsi1 > 75 and rsi30 < 45 and showRSITrend
+    colorbarrsi := rsiAlertCandle
+    indicB := false
+    label.new(bar_index, low, 
+              yloc=yloc.abovebar, 
+              text="RSI ALERT", 
+              style=label.style_xcross,
+              color=color.red,
+              textcolor=color.red,
+              size=size.small)
+    alert("ALERT", alert.freq_once_per_bar_close)
+
+// Sell Alert Condition
+if indicS and rsi1 < 25 and rsi30 > 55 and showRSITrend
+    colorbarrsi := rsiAlertCandle
+    indicS := false
+    label.new(bar_index, low, 
+              yloc=yloc.belowbar, 
+              text="RSI ALERT", 
+              style=label.style_xcross,
+              color=color.green,
+              textcolor=color.green,
+              size=size.small)
+    alert("RSI", alert.freq_once_per_bar_close)
+
+// Additional Trend Reversals
+if rsi60 < 40 and indicB and showRSITrend
+    colorbarrsi := rsiAlertCandle
+    indicB := false
+    indicS := true
+    rih := bar_index
+    vrih := high
+    vril := low
+
+if rsi60 > 60 and indicS and showRSITrend
+    colorbarrsi := rsiAlertCandle
+    indicB := true
+    indicS := false
+    rih := bar_index
+    vrih := high
+    vril := low
+
+// Signal Markers
+plotshape(condBuy and showRSITrend, 
+          title="RSI Buy Signal", 
+          location=location.belowbar, 
+          style=shape.triangleup, 
+          size=size.small, 
+          color=color.green)
+
+plotshape(condSell and showRSITrend, 
+          title="RSI Sell Signal", 
+          location=location.abovebar, 
+          style=shape.triangledown, 
+          size=size.small, 
+          color=color.red)
+
+plotshape(indicB and rsi1 > 75 and rsi30 < 45 and showRSITrend, 
+          title="RSI Buy Alert", 
+          location=location.belowbar, 
+          style=shape.cross, 
+          size=size.tiny, 
+          color=color.yellow)
+
+plotshape(indicS and rsi1 < 25 and rsi30 > 55 and showRSITrend, 
+          title="RSI Sell Alert", 
+          location=location.abovebar, 
+          style=shape.cross, 
+          size=size.tiny, 
+          color=color.yellow)
+
+// Label Markers
+if condBuy and showRSITrend and ta.change(condBuy, 1) 
+    label.new(bar_index, low,
+              yloc=yloc.belowbar, 
+              text="RSI Buy", 
+              style=label.style_label_up,
+              color=rsiBuy,
+              textcolor=color.white,
+              size=size.small)
+
+if condSell and showRSITrend and ta.change(condSell, 1) 
+    label.new(bar_index, high,
+              yloc=yloc.abovebar, 
+              text="RSI Sell", 
+              style=label.style_label_down,
+              color=rsiSell,
+              textcolor=color.white,
+              size=size.small)
+
+// Trend Lines
+if showRSITrend
+    rlinekh := line.new(x1=rih, y1=vrih, x2=bar_index, y2=vrih, xloc=xloc.bar_index,  color=color.new(color.purple, 10), style=line.style_dashed, width=1,extend=extend.right)
+    
+    rlinekl := line.new(x1=rih, y1=vril, x2=bar_index, y2=vril, xloc=xloc.bar_index,  color=color.new(color.purple, 10), style=line.style_dashed, width=1,extend=extend.right)
+
+// EMA Calculations
+ema0 = ta.ema(close, ma0)
+ema1 = ta.ema(close, ma1)
+ema2 = ta.ema(close, ma2)
+ema3 = ta.ema(close, ma3)
+
+// EMA Plotting
+ma_plot0 = plot(emas ? ema0 : na, title="EMA0", color=color_ema0, linewidth=2) 
+ma_plot1 = plot(emas ? ema1 : na, title="EMA1", color=color_ema1, linewidth=2) 
+ma_plot2 = plot(emas ? ema2 : na, title="EMA2", color=color_ema2, linewidth=1) 
+ma_plot3 = plot(emas ? ema3 : na, title="EMA3", color=color_ema3, linewidth=1) 
+
+// SuperTrend Calculations
+atr2 = ta.sma(ta.tr, Periods)
+atr = ta.atr(Periods) 
+up = src - (Multiplier * atr)
+up1 = nz(up[1], up)
+up := close[1] > up1 ? math.max(up, up1) : up
+dn = src + (Multiplier * atr)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? math.min(dn, dn1) : dn
+
+// SuperTrend Trend Calculation
+trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+
+// SuperTrend Plotting
+upPlot = plot(trend == 1 and superTrend ? up : na, 
+              title="Up Trend", 
+              style=plot.style_linebr, 
+              linewidth=2, 
+              color=color.green)
+
+dnPlot = plot(trend == 1 ? na : superTrend ? dn : na, 
+              title="Down Trend", 
+              style=plot.style_linebr, 
+              linewidth=2, 
+              color=color.new(color.red, 10))
+
+// SuperTrend Signals
+buySignal = trend == 1 and trend[1] == -1 
+sellSignal = trend == -1 and trend[1] == 1
+
+// SuperTrend Signal Markers
+plotshape(buySignal and superTrend and showsignals, 
+          title="SuperTrend Buy", 
+          location=location.belowbar, 
+          style=shape.triangleup, 
+          size=size.small, 
+          color=color.green)
+
+plotshape(sellSignal and superTrend and showsignals, 
+          title="SuperTrend Sell", 
+          location=location.abovebar, 
+          style=shape.triangledown, 
+          size=size.small, 
+          color=color.red)
+
+// SuperTrend Alert Conditions
+alertcondition(buySignal and showsignals, 
+               title="SuperTrend Buy", 
+               message="SuperTrend Buy!")
+
+alertcondition(sellSignal and showsignals, 
+               title="SuperTrend Sell", 
+               message="SuperTrend Sell!")
+
+changeCond = trend != trend[1]
+alertcondition(changeCond and showsignals, 
+               title="SuperTrend Direction Change", 
+               message="SuperTrend has changed direction!")
